@@ -2,8 +2,10 @@ import time
 import pickle
 import numpy
 import argparse
+from math import floor, log, ceil
 from random import sample
 from multiprocessing import Pool
+from tree import Tree
 
 parser = argparse.ArgumentParser(description='Synthetic Sampling Benchmarks')
 
@@ -11,6 +13,7 @@ parser.add_argument('--g_file', type=str)
 parser.add_argument('--B', type=int, default=300)
 parser.add_argument('--L', type=int, default=3)
 parser.add_argument('--k', type=int, default=5)
+parser.add_argument('--procs', type=int, default=8)
 args = parser.parse_args()
 
 
@@ -19,7 +22,8 @@ def samp_neigh_g(u):
         return graph[u].copy()
     return set(sample(graph[u], K))
 
-def seq_sample_nodes(vs, adj, n, l, k):
+
+def seq_sample_nodes(vs, l):
     node_sets = [set() for i in range(l)]
     node_sets[l - 1] = set(vs)
     for i in reversed(range(l - 1)):
@@ -33,8 +37,8 @@ def seq_sample_nodes(vs, adj, n, l, k):
     return node_sets
 
 
-def parallel_sample_nodes(vs, adj, n, l, k):
-    po = Pool(8)
+def parallel_sample_nodes(vs, l):
+    po = Pool(args.procs)
     node_sets = [set() for i in range(l)]
     node_sets[l - 1] = set(vs)
     for i in reversed(range(l - 1)):
@@ -47,6 +51,49 @@ def parallel_sample_nodes(vs, adj, n, l, k):
     return node_sets
 
 
+def tree_size(h):
+    return (K ** (h + 1) - K) // (K - 1)
+
+def tree_sample(b, B, l):
+    leaf_set = set()
+    batch_set = set()
+        
+    def sample_tree(v, curr_l):
+        batch_set.add(v)
+        if curr_l > 0:
+            for u in samp_neigh_g(v):
+                sample_tree(u, curr_l - 1)
+        elif curr_l == 0:
+            leaf_set.add(v)
+  
+    f = floor((log(1 + B * (K - 1)) / log(K)) - 1)
+    
+    sample_tree(b, f)
+
+    if len(batch_set) < B:
+        # Adjust Leaves
+        remain = B - len(batch_set)
+        num_to_expand = ceil(remain / K)
+        if num_to_expand < len(leaf_set):
+            to_expand = sample(leaf_set, num_to_expand)
+        else:
+            to_expand = list(leaf_set)
+        expans = []
+        for u in to_expand:
+            leaf_set.remove(u)
+            expans.append(set(samp_neigh_g(u)))
+        batch_set = batch_set.union(*expans)
+        leaf_set = leaf_set.union(*expans)
+    node_sets = parallel_sample_nodes(leaf_set, l)
+    
+    for i in range(l):
+        node_sets[i] = node_sets[i].union(batch_set)
+    
+    return  node_sets, batch_set, leaf_set
+
+
+
+
 if __name__ == '__main__':
     fname = args.g_file
     open_file = open(fname, "rb")
@@ -56,25 +103,37 @@ if __name__ == '__main__':
     n = len(graph)
     L = args.L
     B = args.B
-    k = args.k
-    K = k
+    K = args.k
+
     # Sequential Standard
     print("Sequential Standard:")
     t1 = time.time()
     vs = sample(list(range(n)), B)
-    ls = seq_sample_nodes(vs, graph, n, L, k)
+    ls = seq_sample_nodes(vs, L)
     t2 = time.time()
     print(t2 - t1)
     for i in range(L):
-        print("B(i) size:", len(ls[i]))
+        print("B(" + str(i) + ") size:", len(ls[i]))
     print()
 
     # Parallel Standard
     print("Parallel Standard:")
     t1 = time.time()
-    ls = parallel_sample_nodes(vs, graph, n, L, k)
+    ls = parallel_sample_nodes(vs, L)
     t2 = time.time()
     print(t2 - t1)
     for i in range(L):
-        print("B(i) size:", len(ls[i]))
+        print("B(" + str(i) + ")size:", len(ls[i]))
+    print()
+
+    # Tree
+    print("Tree:")
+    t1 = time.time()
+    ls, bs, leafs = tree_sample(vs[0], B, L)
+    t2 = time.time()
+    print(t2 - t1)
+    for i in range(L):
+        print("B(" + str(i) + ") size:", len(ls[i]))
+    print("effective_batch_size:", len(bs))
+    print("computation_batch_size:", len(leafs))
 
